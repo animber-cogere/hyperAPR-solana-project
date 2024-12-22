@@ -176,6 +176,35 @@ pub fn process_instruction(
                 program_id,
             )
         }
+        9 => {
+            // Retrieve accounts for treasury and mint initialization
+            let accounts_iter = &mut accounts.iter();
+            let treasury_account = next_account_info(accounts_iter)?;
+            let admin_account = next_account_info(accounts_iter)?;
+            let mint_account = next_account_info(accounts_iter)?;
+            let system_program = next_account_info(accounts_iter)?;
+            let token_program = next_account_info(accounts_iter)?;
+            let sysvar_rent = next_account_info(accounts_iter)?;
+            let treasury_token_account = next_account_info(accounts_iter)?; // Treasury Token Account
+            let associated_token_account = next_account_info(accounts_iter)?; // associated Token Account
+                                                                              // Call `initialize_treasury` with the required accounts
+
+            msg!("Treasury Account: {}", treasury_account.key);
+            haprtreasury::create_treasury_ata(
+                &[
+                    treasury_account.clone(),
+                    admin_account.clone(),
+                    mint_account.clone(),
+                    system_program.clone(),
+                    token_program.clone(),
+                    sysvar_rent.clone(),
+                    treasury_token_account.clone(),
+                    associated_token_account.clone(),
+                ],
+                &admin_account.key,
+                program_id,
+            )
+        }
         4 => {
             // Transfer tokens
             let accounts_iter = &mut accounts.iter();
@@ -284,8 +313,8 @@ pub fn process_instruction(
                 &[
                     user.clone(),
                     staker_account.clone(),
-                    treasury_token_account.clone(),
                     user_token_account.clone(),
+                    treasury_token_account.clone(),
                     authority_account.clone(),
                     token_program.clone(),
                 ],
@@ -381,3 +410,4 @@ pub fn process_instruction(
         _ => Err(ProgramError::InvalidInstructionData),
     }
 }
+

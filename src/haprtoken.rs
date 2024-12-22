@@ -323,7 +323,7 @@ pub fn stake_tokens(accounts: &[AccountInfo], amount: u64, program_id: &Pubkey) 
     let token_program = next_account_info(accounts_iter)?;
     let system_program = next_account_info(accounts_iter)?;
 
-    const DEFAULT_DURATION: i64 = 24 * 60 * 60; // One day in seconds
+    const DEFAULT_DURATION: i64 = 10; //24 * 60 * 60; // One day in seconds
     const STAKER_ACCOUNT_SIZE: usize = 8 + 8 + 8 + 32; // Total: 56 bytes
 
     let staker_seed = &[user.key.as_ref(), b"staker"];
@@ -491,6 +491,40 @@ pub fn unstake_tokens(accounts: &[AccountInfo], amount: u64, program_id: &Pubkey
         total_amount
     );
 
+    msg!(
+        "Treasury Token Account Owner: {:?}",
+        treasury_token_account.owner
+    );
+    if treasury_token_account.owner != &spl_token::id() {
+        msg!("Error: Treasury Token Account is not owned by SPL Token Program.");
+        return Err(ProgramError::IncorrectProgramId);
+    }
+
+    msg!("Source Token Account: {:?}", treasury_token_account.key);
+    msg!("Destination Token Account: {:?}", user_token_account.key);
+    msg!("Transfer Authority: {:?}", authority_account.key);
+
+    msg!(
+        "Source Token Account Owner: {:?}",
+        treasury_token_account.owner
+    );
+    msg!(
+        "Destination Token Account Owner: {:?}",
+        user_token_account.owner
+    );
+    msg!("Authority Provided: {:?}", authority_account.key);
+
+    // let token_account_data =
+    //     spl_token::state::Account::unpack(&treasury_token_account.try_borrow_data()?)?;
+    // if token_account_data.owner != treasury_pda {
+    //     msg!(
+    //         "Error: Treasury Token Account authority mismatch. Expected: {:?}, Found: {:?}",
+    //         treasury_pda,
+    //         token_account_data.owner
+    //     );
+    //     return Err(ProgramError::IllegalOwner);
+    // }
+
     // Transfer tokens from Treasury to User
     let seeds = &[TREASURY_SEED, &[bump_seed]];
     let transfer_instruction = spl_token::instruction::transfer(
@@ -568,20 +602,11 @@ pub fn purchase_tickets(
     let buyer_account = next_account_info(accounts_iter)?; // Buyer
     let buyer_token_account = next_account_info(accounts_iter)?; // Buyer's token account
     let treasury_token_account = next_account_info(accounts_iter)?; // Treasury's token account
-                                                                    //let authority_account = next_account_info(accounts_iter)?; // Treasury PDA
     let ticket_account = next_account_info(accounts_iter)?; // Ticket account
-                                                            // let mint_account: &AccountInfo = next_account_info(accounts_iter); //Mint account (to get current token supply)
     let token_program = next_account_info(accounts_iter)?;
     let system_program = next_account_info(accounts_iter)?;
 
-    // Validate Treasury PDA
-    let (treasury_pda, treasury_bump_seed) =
-        Pubkey::find_program_address(&[TREASURY_SEED], program_id);
-    // if *authority_account.key != treasury_pda {
-    //     msg!("Error: Invalid PDA authority for treasury");
-    //     return Err(ProgramError::IncorrectProgramId);
-    // }
-    // Derive the Ticket PDA
+    // Validate Ticket PDA
     let (ticket_pda, ticket_bump_seed) =
         Pubkey::find_program_address(&[TICKET_SEED, buyer_account.key.as_ref()], program_id);
     if *ticket_account.key != ticket_pda {
@@ -595,28 +620,18 @@ pub fn purchase_tickets(
     let total_cost = FIXED_TICKET_PRICE * number_of_tickets;
 
     if number_of_tickets == 0 {
-        msg!(
-            "Error: Amount {} is insufficient to purchase even one ticket.",
-            amount
-        );
-        return Err(ProgramError::Custom(0x01)); // Custom error for insufficient funds
+        msg!("Error: Amount is insufficient to purchase tickets.");
+        return Err(ProgramError::Custom(0x01));
     }
 
     msg!(
         "Purchasing {} tickets for {} tokens (Price per ticket: {}).",
         number_of_tickets,
-        amount,
+        total_cost,
         FIXED_TICKET_PRICE
     );
 
-    msg!(
-        "Total cost for {} tickets: {}",
-        number_of_tickets,
-        total_cost
-    );
-
-    // Perform the token transfer from buyer to treasury
-    let seeds = &[TREASURY_SEED, &[treasury_bump_seed]];
+    // Perform the token transfer
     let transfer_instruction = transfer(
         &spl_token::id(),
         &buyer_token_account.key,
@@ -625,102 +640,127 @@ pub fn purchase_tickets(
         &[],
         total_cost,
     )?;
-    invoke_signed(
+    invoke(
         &transfer_instruction,
         &[
-            buyer_token_account.clone(),    
+            buyer_token_account.clone(),
             treasury_token_account.clone(),
             buyer_account.clone(),
             token_program.clone(),
         ],
-        &[&seeds[..]],
     )?;
     msg!("Token transfer successful.");
 
-    // Handle TicketAccount initialization or update
-    let mut ticket_account_data: TicketAccount = if ticket_account.data_len() == 0 {
-        msg!("Initializing new TicketAccount Struct...");
-        TicketAccount {
+    // Load or initialize the TicketAccount
+    let mut ticket_account_data: TicketAccount;
+    if ticket_account.data_len() == 0 {
+        // Account doesn't exist, create it
+        let rent = Rent::get()?;
+        let ticket_size = 8 + 8 + 8 + 1; // Ticket size
+        let required_size = 32 // Owner (Pubkey)
+            + 8                // ticket_total (u64)
+            + 4                // Vec metadata
+            + (1 * ticket_size); // Minimum size for one ticket
+
+        let lamports_required = rent.minimum_balance(required_size);
+        invoke_signed(
+            &system_instruction::create_account(
+                buyer_account.key,    // Payer
+                ticket_account.key,   // New TicketAccount
+                lamports_required,    // Rent-exempt balance
+                required_size as u64, // Account size
+                program_id,           // Program ID as the owner
+            ),
+            &[
+                buyer_account.clone(),
+                ticket_account.clone(),
+                system_program.clone(),
+            ],
+            &[&[TICKET_SEED, buyer_account.key.as_ref(), &[ticket_bump_seed]]],
+        )?;
+        msg!("Ticket account created and owned by the program.");
+
+        ticket_account_data = TicketAccount {
             owner: *buyer_account.key,
             tickets: Vec::new(),
             ticket_total: 0,
-        }
+        };
     } else {
-        msg!("Loading existing TicketAccount Struct...");
-        TicketAccount::try_from_slice(&ticket_account.data.borrow())?
-    };
-    msg!("Ticket Account Struct intialized and loaded!");
-    // Ensure the owner matches the buyer
-    if ticket_account_data.owner != *buyer_account.key {
-        msg!("Error: Ticket account owner mismatch.");
-        return Err(ProgramError::InvalidAccountData);
+        // Load existing account
+        if *ticket_account.owner != *program_id {
+            msg!("Error: Account owner mismatch. Cannot deserialize.");
+            return Err(ProgramError::IllegalOwner);
+        }
+
+        ticket_account_data = TicketAccount::try_from_slice(&ticket_account.data.borrow())
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        msg!("Existing TicketAccount loaded.");
     }
 
     // Add new tickets to the account
-
-    // Serialize ticket data for this user
     let ticket = Ticket {
-        // owner: *buyer_account.key,
         number_of_tickets,
         deposit_time: Clock::get()?.unix_timestamp,
         vesting_period,
         claimed: false,
     };
-
     ticket_account_data.tickets.push(ticket);
     ticket_account_data.ticket_total += number_of_tickets;
 
-    // Serialize and save updated TicketAccount
-    //let current_supply = u64::from_le_bytes(mint_data[36..44].try_into().unwrap());
-    // Define the maximum number of tickets that can be stored
-    let max_tickets = 178; //(MAX_SUPPLY / FIXED_TICKET_PRICE) as usize;
-    if ticket_account_data.tickets.len() + 1 > max_tickets {
-        msg!("Error: Exceeding maximum ticket limit.");
-        return Err(ProgramError::Custom(0x02)); // Custom error code for max ticket limit
-    }
-    // Calculate the size required for the TicketAccount
+    // Calculate required size for updated TicketAccount
     let ticket_size = 8 + 8 + 8 + 1; // Size of each ticket
-    let required_size = 32                    // Owner (Pubkey)
-    + 8                                   // ticket_total (u64)
-    + 4                                   // Vec metadata (length)
-    + (max_tickets * ticket_size); // Maximum tickets
+    let required_size = 32 // Owner (Pubkey)
+        + 8               // ticket_total (u64)
+        + 4               // Vec metadata
+        + (ticket_account_data.tickets.len() * ticket_size);
 
-    if ticket_account.data_len() == 0 {
-        msg!("There isn't an onchain Ticket Account matching the struct, creating one now!");
+    if ticket_account.data_len() < required_size {
+        // Calculate required rent-exempt balance
         let rent = Rent::get()?;
-        let lamports_required = rent.minimum_balance(required_size);
-        invoke_signed(
-            &system_instruction::create_account(
-                buyer_account.key,    // Payer
-                ticket_account.key,   //    Ticket PDA
-                lamports_required,    // Rent-exempt balance
-                required_size as u64, // Account size
-                program_id,           // Owner program
-            ),
-            &[
-                buyer_account.clone(),
-                ticket_account.clone(),
-                system_program.clone(), // Add the System Program account here
-            ],
-            &[&[TICKET_SEED, buyer_account.key.as_ref(), &[ticket_bump_seed]]],
-        )?;
-        msg!("Ticket account intialized successfully.");
-    } else {
-        msg!("Ticket account already initialized.");
+        let new_lamports_required = rent.minimum_balance(required_size);
+        let current_lamports = ticket_account.lamports();
+
+        if new_lamports_required > current_lamports {
+            let lamports_to_add = new_lamports_required - current_lamports;
+            invoke_signed(
+                &system_instruction::transfer(
+                    buyer_account.key,
+                    ticket_account.key,
+                    lamports_to_add,
+                ),
+                &[
+                    buyer_account.clone(),
+                    ticket_account.clone(),
+                    system_program.clone(),
+                ],
+                &[&[TICKET_SEED, buyer_account.key.as_ref(), &[ticket_bump_seed]]],
+            )?;
+            msg!(
+                "Transferred {} lamports to the TicketAccount for rent-exemption.",
+                lamports_to_add
+            );
+        }
+        ticket_account.realloc(required_size, false)?;
+        msg!("Reallocated TicketAccount to new size: {}", required_size);
     }
 
-    ticket_account_data.serialize(&mut &mut ticket_account.data.borrow_mut()[..])?;
+    // Serialize updated TicketAccount
+    ticket_account_data.serialize(&mut *ticket_account.data.borrow_mut())?;
+    msg!("Updated TicketAccount serialized successfully.");
 
-    // let account_size = ticket_account.data_len();
-    // msg!("Ticket Account Size: {}", account_size);
-
-    msg!("Tickets added: {:?}", ticket_account_data.tickets);
-
+    msg!(
+        "Ticket data of tickets added: {:?}",
+        ticket_account_data.tickets
+    );
     Ok(())
 }
 
 //Reedem purchased ticket for yield via PDA
-pub fn redeem_tickets(accounts: &[AccountInfo], amount: u64, program_id: &Pubkey) -> ProgramResult {
+pub fn redeem_tickets(
+    accounts: &[AccountInfo],
+    mut amount: u64,
+    program_id: &Pubkey,
+) -> ProgramResult {
     msg!("Redeem tickets function called.");
 
     let accounts_iter = &mut accounts.iter();
@@ -728,26 +768,27 @@ pub fn redeem_tickets(accounts: &[AccountInfo], amount: u64, program_id: &Pubkey
     let owner_account = next_account_info(accounts_iter)?; // User's main account
     let mint_account = next_account_info(accounts_iter)?; // Token mint account
     let owner_token_account = next_account_info(accounts_iter)?; // User's token account
-    let treasury_pda = next_account_info(accounts_iter)?; // Treasury PDA
+    let treasury_pda_account = next_account_info(accounts_iter)?; // Treasury PDA
     let token_program = next_account_info(accounts_iter)?; // Token program
     msg!("Checkpoint: Accounts Loaded!");
-    // // Verify PDA authority
-    //
-    // if *authority_account.key != pda {
-    //     msg!("Error: Invalid PDA authority");
-    //     return Err(ProgramError::IncorrectProgramId);
-    // }
-    // msg!("PDA authority verified successfully.");
+
+    // Verify PDA authority
+    let (treasury_pda, bump_seed) = Pubkey::find_program_address(&[TREASURY_SEED], program_id);
+    if *treasury_pda_account.key != treasury_pda {
+        msg!("Error: Invalid PDA authority");
+        return Err(ProgramError::IncorrectProgramId);
+    }
+    msg!("PDA authority verified successfully.");
 
     // Load the ticket account data
-    let mut ticket_account_data =
-        match TicketAccount::try_from_slice_unchecked(&ticket_account.data.borrow()).unwrap() {
-            Ok(data) => data,
-            Err(e) => {
-                msg!("Error deserializing TicketAccount: {:?}", e);
-                return Err(ProgramError::InvalidAccountData);
-            }
-        };
+    let mut ticket_account_data = match TicketAccount::try_from_slice(&ticket_account.data.borrow())
+    {
+        Ok(data) => data,
+        Err(e) => {
+            msg!("Error deserializing TicketAccount: {:?}", e);
+            return Err(ProgramError::InvalidAccountData);
+        }
+    };
 
     msg!("Checkpoint: Ticket Account Data Loaded");
     if ticket_account.data_len() == 0 {
@@ -760,18 +801,23 @@ pub fn redeem_tickets(accounts: &[AccountInfo], amount: u64, program_id: &Pubkey
         msg!("Unauthorized: Only the owner can redeem tickets.");
         return Err(ProgramError::Custom(CustomError::UnauthorizedAccess as u32));
     }
-    msg!("Checkpoint: Ticket Owner verfied");
+    msg!("Checkpoint: Ticket Owner verified");
+
     // Sanity check: Ensure sufficient tickets are available
-    if ticket_account_data.ticket_total < amount {
+    if ticket_account_data.ticket_total > 0 && amount > ticket_account_data.ticket_total {
         msg!(
-            "Error: Requested {} tickets but only {} tickets are available.",
+            "WARNING: Requested {} tickets but only {} tickets are available. Attemping only available amount.",
             amount,
             ticket_account_data.ticket_total
         );
+        amount = ticket_account_data.ticket_total; // Adjust amount
+    } else if ticket_account_data.ticket_total == 0 {
+        msg!("Error: You don't have any tickets.",);
         return Err(ProgramError::Custom(
             CustomError::InsufficientTickets as u32,
         ));
-    }
+    };
+
     msg!("Checkpoint: You have enough tickets to redeem!");
 
     // Use Clock to get the current time
@@ -833,21 +879,25 @@ pub fn redeem_tickets(accounts: &[AccountInfo], amount: u64, program_id: &Pubkey
 
     // Update the total ticket count in the account
     ticket_account_data.ticket_total -= amount;
-    let (treasury_pda, bump_seed) = Pubkey::find_program_address(&[TREASURY_SEED], program_id);
 
     // Mint the total yield to the owner's token account
     let mint_instruction = mint_to(
         &spl_token::id(),
-        &mint_account.key,
-        &owner_token_account.key,
-        &treasury_pda,
+        mint_account.key,
+        owner_token_account.key,
+        treasury_pda_account.key,
         &[],
         total_yield,
     )?;
     let seeds = &[TREASURY_SEED, &[bump_seed]];
     invoke_signed(
         &mint_instruction,
-        &[mint_account.clone(), owner_token_account.clone()],
+        &[
+            mint_account.clone(),
+            owner_token_account.clone(),
+            treasury_pda_account.clone(),
+            token_program.clone(),
+        ],
         &[&seeds[..]],
     )?;
     msg!(
@@ -856,12 +906,39 @@ pub fn redeem_tickets(accounts: &[AccountInfo], amount: u64, program_id: &Pubkey
     );
 
     // Serialize the updated ticket account data
+    let ticket_size = 8 + 8 + 8 + 1; // Size of each ticket
+    let new_size = 32 // Owner (Pubkey)
+        + 8               // ticket_total (u64)
+        + 4               // Vec metadata
+        + (ticket_account_data.tickets.len() * ticket_size); // TODO: Make this dynamic to match the size requirements in the purchase ticket function
+
+    //If reallocation is required, ensure sufficient space:
+    if ticket_account.data_len() != new_size {
+        ticket_account.realloc(new_size, true)?;
+    }
+
+    // Serialize the updated ticket account data
     ticket_account_data.serialize(&mut &mut ticket_account.data.borrow_mut()[..])?;
+
+    // // Zero out any leftover space to prevent stale data issues
+    if ticket_account.data_len() > new_size {
+        ticket_account.data.borrow_mut()[new_size..].fill(0); // Prevents stale data :D
+    }
+
+    msg!(
+        "Serialized ticket account size: {} bytes",
+        ticket_account.data.borrow().len()
+    );
+
     msg!(
         "Tickets redeemed successfully. Remaining tickets: {}",
         ticket_account_data.ticket_total
     );
 
+    msg!(
+        "Ticket data of tickets left: {:?}",
+        ticket_account_data.tickets
+    );
     Ok(())
 }
 

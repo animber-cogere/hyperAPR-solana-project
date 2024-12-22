@@ -6,7 +6,7 @@ import BN from "bn.js";
 
 // Constants for program ID and PDA seed
 const programId = new web3.PublicKey(
-  "ABHENVYtMXfAdN741mJzwoLtqGW7ntpT9uhr2f1Q7wB1"
+  "XAuHXZRDXypuPgQdBpg6Kad8rjPNNQ2WUa7NvYMMcyP"
 );
 
 // Define the PDA seed
@@ -534,7 +534,10 @@ async function minimalTest() {
         pg.wallet.keypair, // User's keypair
       ]);
 
-      console.log(`Unstaked ${amount} tokens. Signature:`, signature);
+      console.log(
+        `Unstaked ${amount} tokens, or all the staked tokens remaining. Signature:`,
+        signature
+      );
     }
 
     // Purchase Ticket
@@ -615,12 +618,20 @@ async function minimalTest() {
       });
 
       const transaction = new web3.Transaction().add(instruction);
-      const signature = await pg.connection.sendTransaction(transaction, [
-        pg.wallet.keypair, // Buyer's keypair
-      ]);
+      const signature = await pg.connection.sendTransaction(
+        transaction,
+        [
+          pg.wallet.keypair, // Buyer's keypair
+        ]
+        // {
+        //   skipPreflight: true,
+        //   preflightCommitment: "confirmed", // Ensures logs are retrieved after execution
+        // }
+      );
 
       console.log(
-        `Purchased ${amount} tokens worth of tickets. Signature:`,
+        `Purchased ${amount} tokens worth of tickets, or we were out of tokens so we couldn't.`,
+        "\n Signature:",
         signature
       );
     }
@@ -647,8 +658,8 @@ async function minimalTest() {
         programId,
         keys: [
           { pubkey: ticketPDA, isSigner: false, isWritable: true }, // Ticket account
-          { pubkey: pg.wallet.publicKey, isSigner: true, isWritable: false }, // Owner account
-          { pubkey: mintAccount, isSigner: false, isWritable: false }, // Mint account
+          { pubkey: pg.wallet.publicKey, isSigner: true, isWritable: true }, // Owner account
+          { pubkey: mintAccount, isSigner: false, isWritable: true }, // Mint account
           {
             pubkey: userTokenAccount.address,
             isSigner: false,
@@ -674,7 +685,7 @@ async function minimalTest() {
         ]);
 
         console.log(
-          "Redeemed ticket and credited yield. Signature:",
+          "Redeemed ticket(s) and credited yield, unless you don't have any tickets. Signature:",
           signature
         );
       } catch (error) {
@@ -683,13 +694,13 @@ async function minimalTest() {
     }
 
     // Run All Tests async function runTests() {
-    //await mintTokens(50000000);
-    // await burnTokens(200);
+    await mintTokens(50000000);
+    //await burnTokens(200);
     //await transferTokens(100, "GL8UPqjDgE2VgVDe8LoKvYxFahozAfNyHr8qhhZLFjgk"); // Replace with actual recipient public key
-    // await stakeTokens(500); // Stake for 1 day
+    //await stakeTokens(500); // Stake for some number of seconds
     //await unstakeTokens(200);
-    await purchaseTickets(5586592, 860); // 1-day vesting period
-    //await redeemTickets(4);
+    //await purchaseTickets(5586592, 8); //  ~5 tickets, 8 second vesting period
+    //await redeemTickets(6);
   } catch (error) {
     console.error("Minimal test failed with error:", error);
   }

@@ -2,7 +2,7 @@ import * as splToken from "@solana/spl-token";
 
 // Constants for program ID and PDA seeds
 const programId = new web3.PublicKey(
-  "ABHENVYtMXfAdN741mJzwoLtqGW7ntpT9uhr2f1Q7wB1"
+  "XAuHXZRDXypuPgQdBpg6Kad8rjPNNQ2WUa7NvYMMcyP"
 );
 const treasury_seed = "treasurythissuperhyperAPRtoken";
 const mint_seed = "mintthissuperhyperAPRtoken";
@@ -82,20 +82,81 @@ async function createTreasuryTokenAccount() {
 // Ensure the accounts match the order expected by the on-chain function.
 async function initializeTreasury() {
   const [treasuryPDA] = await getTreasuryPDA();
-  if (await isTreasuryInitialized()) {
-    return;
-  }
 
   const [mintPDA] = await getMintPDA();
+  let treasuryTokenAccount: web3.PublicKey;
+  if (await isTreasuryInitialized()) {
+    try {
+      treasuryTokenAccount = (
+        await splToken.getOrCreateAssociatedTokenAccount(
+          pg.connection,
+          pg.wallet.keypair, // Payer
+          mintPDA, // Mint
+          treasuryPDA, // Owner
+          true
+        )
+      ).address;
 
-  // const treasuryTokenAccount = (
-  //   await splToken.getOrCreateAssociatedTokenAccount(
-  //     pg.connection,
-  //     pg.wallet.keypair, // Payer
-  //     mintAccount[0], // Mint
-  //     treasuryPDA // Owner
-  //   )
-  // ).address;
+      console.log(
+        "Created or retrieved the Treasury  ATA!",
+        treasuryTokenAccount.toBase58()
+      );
+
+      // ///////Now perform the ATA intialization in a separate step on-chain.
+      // const transaction2 = new web3.Transaction().add(
+      //   new web3.TransactionInstruction({
+      //     programId,
+      //     keys: [
+      //       { pubkey: treasuryPDA, isSigner: false, isWritable: true },
+      //       { pubkey: pg.wallet.publicKey, isSigner: true, isWritable: false },
+      //       { pubkey: mintPDA, isSigner: false, isWritable: true },
+      //       {
+      //         pubkey: web3.SystemProgram.programId,
+      //         isSigner: false,
+      //         isWritable: false,
+      //       },
+      //       {
+      //         pubkey: splToken.TOKEN_PROGRAM_ID,
+      //         isSigner: false,
+      //         isWritable: false,
+      //       },
+      //       { pubkey: web3.SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false }, // Add SysvarRent here
+      //       {
+      //         pubkey: treasuryTokenAccount,
+      //         isSigner: false,
+      //         isWritable: true,
+      //       }, // Treasury Token Account
+      //       {
+      //         pubkey: splToken.ASSOCIATED_TOKEN_PROGRAM_ID,
+      //         isSigner: false,
+      //         isWritable: false,
+      //       },
+      //     ],
+      //     data: Buffer.from([9]), // Instruction to initialize
+      //   })
+      // );
+      // // transaction.add(
+      // //   web3.ComputeBudgetProgram.setComputeUnitLimit({
+      // //     units: 300000, // Adjust as necessary
+      // //   })
+      // // );
+
+      // let signature2 = await pg.connection.sendTransaction(
+      //   transaction2,
+      //   [pg.wallet.keypair]
+      //   //IMPORTANT: TURN THE NEXT THREE LINES ON IF YOU WANT TO READ ON CHAIN DEBUG MESSAGES AND SOLANA PLAYGROUND ISNT SHOWING THEM TO YOU IN YOUR LOGS!
+      //   // {
+      //   //   skipPreflight: true,
+      //   //   preflightCommitment: "confirmed", // Ensures logs are retrieved after execution
+      //   // }
+      // );
+      // console.log("Treasury ATA initialized successfully. Signature:", signature2);
+    } catch (e) {
+      console.log("Error: ", e);
+      return;
+    }
+    return;
+  }
 
   //OR YOU CAN DO THIS WAY:
 
@@ -106,7 +167,6 @@ async function initializeTreasury() {
   //   true // Allow creation of associated token account
   // );
 
-  console.log("Created the Treasury  ATA!");
   console.log("Attempting to initialize the treasury in TS now...");
 
   // console.log("Client Treasury PDA: ", treasuryPDA.toBase58());
@@ -149,7 +209,7 @@ async function initializeTreasury() {
   //   })
   // );
 
-  const signature = await pg.connection.sendTransaction(
+  let signature = await pg.connection.sendTransaction(
     transaction,
     [pg.wallet.keypair]
     //IMPORTANT: TURN THE NEXT THREE LINES ON IF YOU WANT TO READ ON CHAIN DEBUG MESSAGES AND SOLANA PLAYGROUND ISNT SHOWING THEM TO YOU IN YOUR LOGS!
@@ -158,10 +218,16 @@ async function initializeTreasury() {
     //   preflightCommitment: "confirmed", // Ensures logs are retrieved after execution
     // }
   );
-
   console.log("Treasury initialized successfully. Signature:", signature);
+
+  //  // OR use:
+  //    const signature = await web3.sendAndConfirmTransaction(
+  //     connection,
+  //     transaction,
+  //     [adminKeypair] // Payer's keypair
+  //   );
 }
 
 initializeTreasury().then(() => {
-  createTreasuryTokenAccount();
+  //createTreasuryTokenAccount();
 });

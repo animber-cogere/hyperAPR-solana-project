@@ -4,12 +4,18 @@ use solana_program::{
     msg,
     program::invoke_signed,
     program_error::ProgramError,
+    program_pack::Pack, // Import Pack trait
     pubkey::Pubkey,
     system_instruction,
     sysvar::rent::Rent,
     sysvar::Sysvar,
 };
+
+use spl_associated_token_account::{
+    get_associated_token_address, instruction::create_associated_token_account_idempotent,
+};
 use spl_token::instruction::initialize_mint;
+use spl_token::state::{Account, AccountState};
 
 pub const SEED: &[u8] = b"mintthissuperhyperAPRtoken"; // Seed for PDA
 pub const TREASURY_AUTHORITY_SEED: &[u8] = b"treasurythissuperhyperAPRtoken";
@@ -128,37 +134,96 @@ pub fn initialize_treasury(
         msg!("Mint account already initialized.");
     }
 
-    // // Step 3: Initialize the Treasury Token Account
-    // msg!("Validating Treasury Token Account...");
+    // Step 3: Initialize the Treasury Token Account
 
-    // // Avoid multiple borrows of `treasury_token_account`
-    // let treasury_token_account_data_len = treasury_token_account.data_len();
-    // if treasury_token_account_data_len == 0 {
-    //     msg!("Treasury Token Account not initialized. Proceeding with creation...");
+    // msg!("Validating Treasury Associated Token Account...");
 
-    //     // Invoke to create the associated token account
-    //     invoke_signed(
-    //         &spl_associated_token_account::create_associated_token_account(
-    //             &admin_account.key,     // Payer
-    //             &treasury_account.key,  // Treasury PDA (Owner of the Treasury Token Account)
-    //             &mint_account_info.key, // Mint Account
-    //         ),
-    //         &[
-    //             admin_account.clone(),
-    //             treasury_token_account.clone(),
-    //             treasury_account.clone(),
-    //             mint_account_info.clone(),
-    //             system_program.clone(),
-    //             token_program.clone(),
-    //             sysvar_rent.clone(),
-    //         ],
-    //         &[], // No seeds needed
-    //     )?;
-    //     msg!("Treasury Token Account successfully created.");
-    // } else {
-    //     msg!("Treasury Token Account already initialized.");
-    // }
+    // let treasury_token_account_data = treasury_token_account.data.borrow();
+    // let treasury_token_account_info: Account = match Account::unpack(&treasury_token_account_data) {
+    //     Ok(account) => account,
+    //     Err(_) => {
+    //         msg!("Failed to unpack the Treasury Token Account data.");
+    //         return Err(ProgramError::InvalidAccountData);
+    //     }
+    // };
 
+    Ok(())
+}
+
+pub fn create_treasury_ata(
+    accounts: &[AccountInfo],
+    admin: &Pubkey,
+    program_id: &Pubkey,
+) -> ProgramResult {
+    let accounts_iter = &mut accounts.iter();
+    let treasury_account = next_account_info(accounts_iter)?;
+    let admin_account = next_account_info(accounts_iter)?;
+    let mint_account_info = next_account_info(accounts_iter)?;
+    let system_program = next_account_info(accounts_iter)?;
+    let token_program = next_account_info(accounts_iter)?;
+    let sysvar_rent = next_account_info(accounts_iter)?;
+    let treasury_token_account = next_account_info(accounts_iter)?; // Treasury Token Account'
+    let associated_token_account = next_account_info(accounts_iter)?; // associated Token Account
+
+    let (pda, bump_seed) = Pubkey::find_program_address(&[TREASURY_AUTHORITY_SEED], program_id);
+    // Derive Mint PDA
+    let (mint_pda, mint_bump_seed) = Pubkey::find_program_address(&[SEED], program_id);
+    let seeds = &[TREASURY_AUTHORITY_SEED, &[bump_seed]];
+    let ata_address = get_associated_token_address(&pda, &mint_pda);
+    msg!("Derived ATA address: {}", ata_address);
+    msg!("Treasury Token Account: {}", treasury_token_account.key);
+    // Validate that the passed ATA matches the derived ATA
+    if treasury_token_account.key != &ata_address {
+        msg!("Error: Provided ATA address does not match derived address.");
+        return Err(ProgramError::InvalidArgument);
+    }
+    msg!("Treasury Token Account not initialized. Proceeding with creation...");
+
+    // Create the associated token account creation instruction
+    let create_ata_instruction = create_associated_token_account_idempotent(
+        &admin_account.key,     // Payer (Funding address)
+        &treasury_account.key,  // Treasury PDA (Wallet address, which owns the token account)
+        &mint_account_info.key, // Mint Address
+        &token_program.key,     // Token Program ID
+    );
+
+    // Invoke the instruction to create the ATA using  cloning
+    invoke_signed(
+        &create_ata_instruction,
+        &[
+            admin_account.clone(),          //Payer
+            treasury_token_account.clone(), // ATA (to be created)
+            treasury_account.clone(),       // Wallet (Treasury PDA)
+            mint_account_info.clone(),      // mint account
+            system_program.clone(),
+            token_program.clone(),
+            // associated_token_account.clone(),
+            //sysvar_rent.clone(),
+        ],
+        &[seeds], // Pass seeds for PDA authorization
+    )?;
+
+    msg!("Treasury Token Account successfully created.");
+    // msg!("Ensuring the Treasury ATA is owned by the Treasury PDA");
+    // let set_authority_ix = spl_token::instruction::set_authority(
+    //     token_program.key,                                   // SPL Token Program ID
+    //     treasury_token_account.key,                          // Treasury ATA
+    //     Some(&treasury_account.key),                         // New authority (Treasury PDA)
+    //     spl_token::instruction::AuthorityType::AccountOwner, // Authority type
+    //     admin_account.key,                                   // Current authority (Admin Account)
+    //     &[admin_account.key],                                // Signers
+    // )?;
+
+    // invoke_signed(
+    //     &set_authority_ix,
+    //     &[
+    //         treasury_token_account.clone(),
+    //         admin_account.clone(),
+    //         token_program.clone(),
+    //     ],
+    //     &[seeds], // Treasury PDA seeds
+    // )?;
+    // msg!("Treasury Token Account owned by the Treasury PDA!");
     Ok(())
 }
 
